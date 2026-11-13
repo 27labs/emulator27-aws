@@ -1,0 +1,10 @@
+{
+  // Serves install.sh at https://e27.samuelbido.com/aws
+  // Deploy with: scripts/embed.sh --check && wrangler deploy
+  "name": "e27",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "routes": [{ "pattern": "e27.samuelbido.com", "custom_domain": true }],
+  "rules": [{ "type": "Text", "globs": ["**/*.sh"], "fallthrough": false }]
+}

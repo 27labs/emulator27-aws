@@ -43,10 +43,4 @@ Options go before the Terraform arguments:
 
 ## Development
 
-`install.sh` embeds a copy of everything in `bin/`, so the installer is a single download. After changing a file in `bin/`, regenerate it:
-
-```bash
-scripts/embed.sh
-```
-
-`scripts/embed.sh --check` exits non-zero when `install.sh` is out of date.
+See [DEVELOPMENT.md](DEVELOPMENT.md).
