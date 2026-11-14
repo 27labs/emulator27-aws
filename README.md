@@ -34,12 +34,41 @@ e27-aws init
 e27-aws apply
 ```
 
-Options go before the Terraform arguments:
+Options go before the command or the Terraform arguments:
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `--port PORT` | `9297` | Port the emulator listens on. |
-| `--timeout SECONDS` | `30` | How long to wait for the emulator to become ready. |
+| `--wait-time SECONDS` | `30` | How long to wait for the emulator to become ready. |
+| `--idle-timeout TIME` | `45m` | The emulator exits after this long without an API call. Seconds, or a number followed by `s`, `m` or `h` (`2700`, `45m`, `2h`). |
+| `--version` | | Print the `e27-aws` version. |
+| `--help` | | Print the usage. |
+
+The idle timeout can also be set with the `E27_AWS_IDLE_TIMEOUT` environment variable; `--idle-timeout` wins over it. It only applies when `e27-aws` starts the emulator, not to one that is already running.
+
+`e27-aws --version` prints the version of `e27-aws`. For Terraform's, use `e27-aws version`.
+
+### Teardown
+
+```bash
+e27-aws teardown
+```
+
+Shuts down the emulator on the default port (or `e27-aws --port PORT teardown`), then asks whether to also delete the Terraform state files in the current directory (`terraform.tfstate`, its backup, and those of other workspaces). The emulator keeps everything in memory, so after a teardown that state describes resources that no longer exist.
+
+Answer the question up front with `-y` (delete) or `-n` (keep):
+
+```bash
+e27-aws teardown -y
+```
+
+### Update
+
+```bash
+e27-aws update
+```
+
+Updates AWS Emulator to its latest package and `e27-aws` to its latest version, by running the installer again. It may ask for your `sudo` password. An emulator that is already running keeps the previous version until you tear it down.
 
 ## Development
 
