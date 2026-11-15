@@ -70,6 +70,10 @@ e27-aws update
 
 Updates AWS Emulator to its latest package and `e27-aws` to its latest version, by running the installer again. It may ask for your `sudo` password. An emulator that is already running keeps the previous version until you tear it down.
 
+## Telemetry
+
+The installer and `e27-aws` send anonymous usage telemetry. [TELEMETRY.md](TELEMETRY.md) lists what is sent and how to turn it off.
+
 ## Development
 
 See [DEVELOPMENT.md](DEVELOPMENT.md).

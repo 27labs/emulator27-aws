@@ -16,6 +16,12 @@
 # Root is only needed to install dependencies. When run through sudo, e27-aws
 # is still installed for the user who invoked sudo, not for root.
 #
+# Sends anonymous usage telemetry unless E27_AWS_TELEMETRY=off is set; see
+# TELEMETRY.md. sudo does not pass your environment on, so
+# to opt out of it for the installer itself:
+#
+#   curl -fsSL https://e27.samuelbido.com/aws | sudo E27_AWS_TELEMETRY=off bash
+#
 # Everything runs inside main(), called on the last line, so a truncated
 # download can never execute half of the script.
 
@@ -29,6 +35,17 @@ AWS_GPG_KEY_URL="https://downloads.aws.com/keys/gpg/current.asc"
 AWS_GPG_KEY_UID="ssm-publishing@amazon.com"
 AWS_GPG_FINGERPRINT="98BCF336A3BE53B734E967C52E5BF49BD940F624"
 
+# Anonymous usage telemetry. The key only allows sending events, so it is safe
+# to publish.
+POSTHOG_HOST="https://us.i.posthog.com"
+POSTHOG_KEY="phc_BjwSDxBGf7gBNkiPAyrZYCstyMBvsijtY36dGKk8x4dM"
+TELEMETRY_DIR=""   # where the anonymous ID is kept; set by detect_target_user
+STEP=start         # what the installer is doing, reported when it fails
+DISTRO=unknown
+DONE=false
+EMULATOR_RESULT=present
+TERRAFORM_RESULT=present
+
 SUDO=""
 UPDATE=false
 FAMILY=""
@@ -40,10 +57,85 @@ die()  { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-cleanup() {
+on_exit() {
+    local status=$?
+
     if [[ -n "$TMP_DIR" ]]; then
         rm -rf "$TMP_DIR"
     fi
+    if [[ "$DONE" != true && $status -ne 0 ]]; then
+        track install_failed step "$STEP"
+    fi
+}
+
+# --- Telemetry ---------------------------------------------------------------
+
+telemetry_enabled() {
+    case "${E27_AWS_TELEMETRY:-}" in
+        off|OFF|Off|0|false|FALSE|False|no|NO|No) return 1 ;;
+    esac
+    [[ "${DO_NOT_TRACK:-0}" == 0 ]]
+}
+
+# Prints the anonymous ID that e27-aws also uses, a random UUID, creating it on
+# first use. Before the invoking user is known, prints a one-off ID instead.
+telemetry_id() {
+    local id=""
+
+    if [[ -n "$TELEMETRY_DIR" && -r "$TELEMETRY_DIR/id" ]]; then
+        id="$(head -n 1 "$TELEMETRY_DIR/id" 2>/dev/null)" || id=""
+    fi
+    if ! [[ "$id" =~ ^[0-9a-f-]{36}$ ]]; then
+        id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)" || return 0
+        [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || return 0
+        if [[ -n "$TELEMETRY_DIR" ]]; then
+            make_dir "$TELEMETRY_DIR" 2>/dev/null || return 0
+            echo "$id" > "$TELEMETRY_DIR/id" 2>/dev/null || return 0
+            own "$TELEMETRY_DIR/id" 2>/dev/null || true
+        fi
+    fi
+    echo "$id"
+}
+
+# track EVENT [KEY VALUE]...
+#
+# Sends an event in the background. It never fails, never prints anything and
+# gives up after two seconds. Values are reduced to letters, digits, ".", "_"
+# and "-".
+track() {
+    local event="$1" id props key value
+    shift
+
+    telemetry_enabled || return 0
+    have curl || return 0
+    id="$(telemetry_id)" || return 0
+    [[ -n "$id" ]] || return 0
+
+    props="\"\$process_person_profile\":false,\"\$lib\":\"e27-aws-installer\""
+    props+=",\"distro\":\"${DISTRO//[^A-Za-z0-9._-]/}\",\"family\":\"${FAMILY:-unknown}\""
+    props+=",\"arch\":\"$(uname -m | tr -cd 'A-Za-z0-9._-')\",\"update\":$UPDATE"
+    if [[ -n "${CI:-}" ]]; then
+        props+=",\"ci\":true"
+    else
+        props+=",\"ci\":false"
+    fi
+
+    while [[ $# -ge 2 ]]; do
+        key="${1//[^A-Za-z0-9_]/}"
+        value="${2//[^A-Za-z0-9._-]/}"
+        shift 2
+        if [[ "$value" =~ ^(true|false|0|[1-9][0-9]{0,8})$ ]]; then
+            props+=",\"$key\":$value"
+        else
+            props+=",\"$key\":\"$value\""
+        fi
+    done
+
+    curl -sS --max-time 2 -o /dev/null \
+        -H 'Content-Type: application/json' \
+        -d "{\"api_key\":\"$POSTHOG_KEY\",\"event\":\"$event\",\"distinct_id\":\"$id\",\"properties\":{$props}}" \
+        "$POSTHOG_HOST/i/v0/e/" </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
 }
 
 # --- Platform detection ------------------------------------------------------
@@ -54,6 +146,7 @@ detect_family() {
 
     # shellcheck disable=SC1091
     . /etc/os-release
+    DISTRO="${ID:-unknown}"
 
     local id
     for id in ${ID:-} ${ID_LIKE:-}; do
@@ -94,6 +187,7 @@ detect_target_user() {
     local home
 
     if [[ $EUID -ne 0 || -z "${SUDO_USER:-}" || "$SUDO_USER" == root ]]; then
+        TELEMETRY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/e27-aws"
         return
     fi
 
@@ -101,6 +195,7 @@ detect_target_user() {
     [[ -n "$home" && -d "$home" ]] || die "Cannot find the home directory of $SUDO_USER."
 
     BIN_DIR="$home/.local/bin"
+    TELEMETRY_DIR="$home/.config/e27-aws"
     OWNER="$SUDO_USER:$(id -gn "$SUDO_USER")"
 }
 
@@ -204,6 +299,7 @@ install_aws_emulator() {
     # AWS publishes only .deb and .rpm packages, so there is no official way
     # to install it on Arch. Stop before changing anything.
     if [[ "$FAMILY" == arch ]]; then
+        STEP=aws_emulator_no_arch_package
         die "AWS Emulator is not installed, and AWS provides no package for Arch Linux. Install it yourself so that aws-emulator is on your PATH, then re-run this installer."
     fi
 
@@ -294,7 +390,7 @@ install_file 'e27-aws.sh' <<'E27_EMBEDDED_FILE_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION=0.2.0
+VERSION=0.3.0
 
 INSTALL_URL="${E27_AWS_INSTALL_URL:-https://e27.samuelbido.com/aws}"
 PROG="$(basename "$0")"
@@ -302,6 +398,11 @@ PROG="$(basename "$0")"
 DEFAULT_PORT=9297
 DEFAULT_WAIT_TIME=30
 DEFAULT_IDLE_TIMEOUT=45m
+
+# Anonymous usage telemetry; see TELEMETRY.md. The key
+# only allows sending events, so it is safe to publish.
+POSTHOG_HOST="https://us.i.posthog.com"
+POSTHOG_KEY="phc_BjwSDxBGf7gBNkiPAyrZYCstyMBvsijtY36dGKk8x4dM"
 
 print_usage() {
     cat <<EOF
@@ -327,6 +428,11 @@ Options (before the command or the Terraform arguments):
                         Default: \$E27_AWS_IDLE_TIMEOUT, or $DEFAULT_IDLE_TIMEOUT.
   --version             Print the $PROG version.
   --help                Print this help.
+
+Environment:
+  E27_AWS_TELEMETRY=off    Turn off $PROG's anonymous usage telemetry.
+  EMULATOR_TELEMETRY=off   Turn off aws-emulator's own telemetry. This is the
+                           emulator's variable; $PROG does not touch it.
 EOF
 }
 
@@ -359,6 +465,94 @@ to_seconds() {
     echo "$seconds"
 }
 
+# --- Telemetry ---------------------------------------------------------------
+
+telemetry_enabled() {
+    case "${E27_AWS_TELEMETRY:-}" in
+        off|OFF|Off|0|false|FALSE|False|no|NO|No) return 1 ;;
+    esac
+    [[ "${DO_NOT_TRACK:-0}" == 0 ]]
+}
+
+# Prints this installation's anonymous ID, a random UUID, creating it on first
+# use. Prints nothing when it cannot be stored.
+telemetry_id() {
+    local dir="${XDG_CONFIG_HOME:-$HOME/.config}/e27-aws" id=""
+
+    if [[ -r "$dir/id" ]]; then
+        id="$(head -n 1 "$dir/id" 2>/dev/null)" || id=""
+    fi
+    if ! [[ "$id" =~ ^[0-9a-f-]{36}$ ]]; then
+        id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)" || return 0
+        [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || return 0
+        mkdir -p "$dir" 2>/dev/null || return 0
+        echo "$id" > "$dir/id" 2>/dev/null || return 0
+    fi
+    echo "$id"
+}
+
+# track EVENT [KEY VALUE]...
+#
+# Sends an event in the background. It never fails, never prints anything and
+# gives up after two seconds. Values are reduced to letters, digits, ".", "_"
+# and "-", so nothing typed by the user can end up in an event by accident.
+track() {
+    local event="$1" id props key value
+    shift
+
+    telemetry_enabled || return 0
+    command -v curl >/dev/null 2>&1 || return 0
+    id="$(telemetry_id)" || return 0
+    [[ -n "$id" ]] || return 0
+
+    props="\"\$process_person_profile\":false,\"\$lib\":\"e27-aws\""
+    props+=",\"version\":\"$VERSION\",\"arch\":\"$(uname -m | tr -cd 'A-Za-z0-9._-')\""
+    if [[ -n "${CI:-}" ]]; then
+        props+=",\"ci\":true"
+    else
+        props+=",\"ci\":false"
+    fi
+
+    while [[ $# -ge 2 ]]; do
+        key="${1//[^A-Za-z0-9_]/}"
+        value="${2//[^A-Za-z0-9._-]/}"
+        shift 2
+        if [[ "$value" =~ ^(true|false|0|[1-9][0-9]{0,8})$ ]]; then
+            props+=",\"$key\":$value"
+        else
+            props+=",\"$key\":\"$value\""
+        fi
+    done
+
+    curl -sS --max-time 2 -o /dev/null \
+        -H 'Content-Type: application/json' \
+        -d "{\"api_key\":\"$POSTHOG_KEY\",\"event\":\"$event\",\"distinct_id\":\"$id\",\"properties\":{$props}}" \
+        "$POSTHOG_HOST/i/v0/e/" </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+}
+
+# Prints the Terraform subcommand among the arguments if it is a known one,
+# "other" if it is not, and "none" if there is none. Options such as -chdir
+# are skipped, so no path or value is ever reported.
+terraform_command() {
+    local arg
+
+    for arg in "$@"; do
+        case "$arg" in
+            -*) continue ;;
+            apply|console|destroy|fmt|force-unlock|get|graph|import|init|login|logout|metadata|modules|output|plan|providers|query|refresh|show|stacks|state|taint|test|untaint|validate|version|workspace)
+                echo "$arg"
+                return
+                ;;
+            *)
+                echo other
+                return
+                ;;
+        esac
+    done
+    echo none
+}
+
 # --- Emulator ----------------------------------------------------------------
 
 emulator_healthy() {
@@ -368,21 +562,25 @@ emulator_healthy() {
 
 start_emulator() {
     local log="/tmp/aws-emulator-$PORT.log"
-    local pid
+    local pid started=$SECONDS
 
-    aws-emulator --port "$PORT" --telemetry off --idle-timeout "$IDLE_TIMEOUT" \
+    # aws-emulator's own telemetry is left to the emulator: the user controls
+    # it with EMULATOR_TELEMETRY or the emulator's config file.
+    aws-emulator --port "$PORT" --idle-timeout "$IDLE_TIMEOUT" \
         > "$log" 2>&1 &
     pid=$!
 
     # Wait until the emulator is ready.
     for _ in $(seq 1 "$WAIT_TIME"); do
         if emulator_healthy; then
+            EMULATOR_STARTUP_SECONDS=$(( SECONDS - started ))
             return
         fi
         sleep 1
     done
 
     kill "$pid" 2>/dev/null || true
+    track emulator_start_failed wait_time "$WAIT_TIME"
     echo "Error: aws-emulator on port $PORT did not become ready within ${WAIT_TIME}s." >&2
     echo "See $log for details." >&2
     exit 1
@@ -421,6 +619,7 @@ stop_emulator() {
             die "Port $PORT is in use by another program (PID ${others[*]}), not aws-emulator. Leaving it alone."
         fi
         echo "No aws-emulator is running on port $PORT."
+        TEARDOWN_EMULATOR=not_running
         return
     fi
 
@@ -436,6 +635,7 @@ stop_emulator() {
             fi
         done
         echo "Stopped aws-emulator on port $PORT."
+        TEARDOWN_EMULATOR=stopped
         return
     done
 
@@ -478,10 +678,12 @@ cmd_teardown() {
 
     if (( ${#files[@]} == 0 )); then
         echo "No Terraform state files in $PWD."
+        TEARDOWN_STATE=none
         return
     fi
 
     if [[ -z "$answer" ]]; then
+        TEARDOWN_PROMPTED=true
         echo "Terraform state files in $PWD:"
         printf '  %s\n' "${files[@]}"
         reply=""
@@ -495,13 +697,15 @@ cmd_teardown() {
     if [[ "$answer" == yes ]]; then
         rm -f -- "${files[@]}"
         echo "Deleted: ${files[*]}"
+        TEARDOWN_STATE=deleted
     else
         echo "Kept the Terraform state files."
+        TEARDOWN_STATE=kept
     fi
 }
 
 cmd_update() {
-    local installer
+    local installer new_version
 
     [[ $# -eq 0 ]] || usage
 
@@ -515,7 +719,9 @@ cmd_update() {
 
     bash "$installer" --update
 
-    echo "$PROG: $VERSION -> $("$0" --version | awk '{ print $NF }')"
+    new_version="$("$0" --version | awk '{ print $NF }')"
+    echo "$PROG: $VERSION -> $new_version"
+    track update to_version "$new_version"
 }
 
 # --- Main --------------------------------------------------------------------
@@ -524,6 +730,12 @@ PORT=$DEFAULT_PORT
 WAIT_TIME=$DEFAULT_WAIT_TIME
 IDLE_TIMEOUT="${E27_AWS_IDLE_TIMEOUT:-$DEFAULT_IDLE_TIMEOUT}"
 IDLE_TIMEOUT_SOURCE="E27_AWS_IDLE_TIMEOUT"
+
+# Reported by telemetry.
+EMULATOR_STARTUP_SECONDS=0
+TEARDOWN_EMULATOR=""
+TEARDOWN_STATE=""
+TEARDOWN_PROMPTED=false
 
 # Parse optional flags before the command or the Terraform arguments. Parsing
 # stops at the first unrecognised argument (or "--"), which is passed through
@@ -604,6 +816,8 @@ if [[ "$PASSTHROUGH" == false ]]; then
         teardown)
             shift
             cmd_teardown "$@"
+            track teardown emulator "$TEARDOWN_EMULATOR" \
+                state_files "$TEARDOWN_STATE" prompted "$TEARDOWN_PROMPTED"
             exit 0
             ;;
         update)
@@ -615,9 +829,25 @@ if [[ "$PASSTHROUGH" == false ]]; then
 fi
 
 # Start emulator if it isn't already running.
+EMULATOR=reused
 if ! emulator_healthy; then
     start_emulator
+    EMULATOR=started
 fi
+
+# Where the idle timeout came from: the option, the variable or the default.
+if [[ "$IDLE_TIMEOUT_SOURCE" == --idle-timeout ]]; then
+    IDLE_TIMEOUT_FROM=option
+elif [[ -n "${E27_AWS_IDLE_TIMEOUT:-}" ]]; then
+    IDLE_TIMEOUT_FROM=environment
+else
+    IDLE_TIMEOUT_FROM=default
+fi
+
+track command_run command "$(terraform_command "$@")" \
+    emulator "$EMULATOR" startup_seconds "$EMULATOR_STARTUP_SECONDS" \
+    custom_port "$([[ "$PORT" == "$DEFAULT_PORT" ]] && echo false || echo true)" \
+    idle_timeout_seconds "$IDLE_TIMEOUT" idle_timeout_source "$IDLE_TIMEOUT_FROM"
 
 # Configure Terraform's AWS provider.
 export AWS_ENDPOINT_URL="$ENDPOINT"
@@ -647,16 +877,26 @@ main() {
         shift
     done
 
+    trap on_exit EXIT
+
+    STEP=detect_platform
     detect_family
     detect_target_user
 
     TMP_DIR="$(mktemp -d)"
-    trap cleanup EXIT
 
+    STEP=tools
     ensure_tools
 
+    if telemetry_enabled; then
+        info "Sending anonymous usage telemetry. Turn it off with E27_AWS_TELEMETRY=off."
+    fi
+    track install_started sudo "$([[ -n "${SUDO_USER:-}" ]] && echo true || echo false)"
+
+    STEP=aws_emulator
     if ! have aws-emulator; then
         install_aws_emulator
+        EMULATOR_RESULT=installed
     elif [[ "$UPDATE" != true ]]; then
         info "AWS Emulator is already installed."
     elif [[ "$FAMILY" == arch ]]; then
@@ -664,17 +904,21 @@ main() {
     else
         # The latest package replaces an older version.
         install_aws_emulator
+        EMULATOR_RESULT=updated
         if pgrep -x aws-emulator >/dev/null 2>&1; then
             warn "An emulator is still running the previous version. Stop it with \"e27-aws teardown\"; the next e27-aws command starts the new one."
         fi
     fi
 
+    STEP=terraform
     if have terraform; then
         info "Terraform is already installed."
     else
         install_terraform
+        TERRAFORM_RESULT=installed
     fi
 
+    STEP=e27_aws
     info "Installing e27-aws into $BIN_DIR"
     make_dir "$BIN_DIR"
     install_files
@@ -692,6 +936,9 @@ main() {
                 ;;
         esac
     fi
+
+    DONE=true
+    track install_completed aws_emulator "$EMULATOR_RESULT" terraform "$TERRAFORM_RESULT"
 
     info "Done. Use e27-aws in place of terraform, e.g.: e27-aws plan"
 }
