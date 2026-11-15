@@ -1,1 +1,4 @@
-.wrangler/
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform/terraform.tfvars
