@@ -11,6 +11,7 @@ The installer:
 
 1. Installs [AWS Emulator](https://docs.aws.amazon.com/emulator/latest/userguide/getting-started-linux.html) and [Terraform](https://developer.hashicorp.com/terraform/install) if they are missing, using their official packages. This is the only step that needs `sudo`.
 2. Installs `e27-aws.sh` into your own `~/.local/bin` (not root's) and links it as `e27-aws`.
+3. Installs an [agent skill](skill/SKILL.md) into `~/.claude/skills/e27-aws` and `~/.agents/skills/e27-aws`, so coding agents such as Claude Code know when and how to use `e27-aws`.
 
 Supported platforms: Debian, Ubuntu, Fedora and Arch Linux (and their derivatives), on x86_64 and aarch64.
 
@@ -69,6 +70,14 @@ e27-aws update
 ```
 
 Updates AWS Emulator to its latest package and `e27-aws` to its latest version, by running the installer again. It may ask for your `sudo` password. An emulator that is already running keeps the previous version until you tear it down.
+
+### Remove
+
+```bash
+e27-aws remove
+```
+
+Removes `e27-aws.sh`, the `e27-aws` link, the agent skill and the telemetry ID. AWS Emulator and Terraform are left in place; the command prints how to remove them with your distribution's package manager. A running emulator is not stopped: run `e27-aws teardown` first.
 
 ## Telemetry
 

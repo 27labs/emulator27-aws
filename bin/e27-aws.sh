@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION=0.3.0
+VERSION=0.4.1
 
 INSTALL_URL="${E27_AWS_INSTALL_URL:-https://e27.samuelbido.com/aws}"
 PROG="$(basename "$0")"
@@ -20,6 +20,7 @@ print_usage() {
 Usage: $PROG [options] [terraform args...]
        $PROG [--port PORT] teardown [-y | -n]
        $PROG update
+       $PROG remove
 
 Commands:
   teardown   Shut down the aws-emulator on the given port, after asking whether
@@ -27,6 +28,8 @@ Commands:
                -y, --yes   delete them without asking
                -n, --no    keep them without asking
   update     Update aws-emulator and $PROG itself.
+  remove     Remove $PROG and its agent skill, and print how to remove
+             aws-emulator and terraform.
 
 Anything else is passed to terraform, with the emulator started if needed.
 
@@ -334,6 +337,89 @@ cmd_update() {
     track update to_version "$new_version"
 }
 
+# Prints how to remove the given packages with this platform's package manager.
+print_package_removal() {
+    local id family="" list="$*"
+
+    for id in $(. /etc/os-release 2>/dev/null; echo "${ID:-} ${ID_LIKE:-}"); do
+        case "$id" in
+            debian|ubuntu)                              family=debian ;;
+            fedora|amzn|rhel|centos|rocky|almalinux|ol) family=rpm ;;
+            arch|archlinux)                             family=arch ;;
+            *) continue ;;
+        esac
+        break
+    done
+
+    echo
+    echo "Not removed: ${list// / and }. To remove:"
+    case "$family" in
+        debian) echo "  sudo apt remove $*" ;;
+        rpm)
+            if command -v dnf >/dev/null 2>&1; then
+                echo "  sudo dnf remove $*"
+            else
+                echo "  sudo yum remove $*"
+            fi
+            ;;
+        arch)
+            # AWS has no Arch package, so aws-emulator was not installed by pacman.
+            if [[ " $* " == *" terraform "* ]]; then
+                echo "  sudo pacman -Rs terraform"
+            fi
+            if [[ " $* " == *" aws-emulator "* ]]; then
+                echo "  aws-emulator: the same way you installed it (AWS has no Arch package)"
+            fi
+            ;;
+        *) echo "  use your package manager" ;;
+    esac
+}
+
+cmd_remove() {
+    local script bin_dir link dir config packages=()
+
+    [[ $# -eq 0 ]] || usage
+
+    script="$(readlink -f "$0")"
+    bin_dir="$(dirname "$script")"
+
+    # Sent first: it needs the anonymous ID, which is removed below.
+    track remove
+
+    # The links to the script, such as "e27-aws", then the script itself.
+    for link in "$bin_dir"/*; do
+        if [[ -L "$link" && "$(readlink -f "$link")" == "$script" ]]; then
+            rm -f -- "$link"
+            echo "Removed $link"
+        fi
+    done
+    rm -f -- "$script"
+    echo "Removed $script"
+
+    # The skill, from where the installer puts it.
+    for dir in "$HOME/.claude/skills/e27-aws" "$HOME/.agents/skills/e27-aws"; do
+        if [[ -f "$dir/SKILL.md" ]]; then
+            rm -f -- "$dir/SKILL.md"
+            rmdir -- "$dir" 2>/dev/null || true
+            echo "Removed $dir"
+        fi
+    done
+
+    # The anonymous telemetry ID.
+    config="${XDG_CONFIG_HOME:-$HOME/.config}/e27-aws"
+    if [[ -f "$config/id" ]]; then
+        rm -f -- "$config/id"
+        rmdir -- "$config" 2>/dev/null || true
+        echo "Removed $config"
+    fi
+
+    command -v aws-emulator >/dev/null 2>&1 && packages+=(aws-emulator)
+    command -v terraform >/dev/null 2>&1 && packages+=(terraform)
+    if (( ${#packages[@]} > 0 )); then
+        print_package_removal "${packages[@]}"
+    fi
+}
+
 # --- Main --------------------------------------------------------------------
 
 PORT=$DEFAULT_PORT
@@ -433,6 +519,11 @@ if [[ "$PASSTHROUGH" == false ]]; then
         update)
             shift
             cmd_update "$@"
+            exit 0
+            ;;
+        remove)
+            shift
+            cmd_remove "$@"
             exit 0
             ;;
     esac

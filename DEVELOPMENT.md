@@ -1,6 +1,6 @@
 # Development
 
-`install.sh` embeds a copy of everything in `bin/`, so the installer is a single download. After changing a file in `bin/`, regenerate it:
+`install.sh` embeds a copy of everything in `bin/` and of the agent skill, [skill/SKILL.md](skill/SKILL.md), so the installer is a single download. After changing any of them, regenerate it:
 
 ```bash
 scripts/embed.sh
