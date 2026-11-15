@@ -1,7 +1,8 @@
-# Serves install.sh at https://e27.samuelbido.com/aws
+# Serves install.sh at https://<hostname><path>
 #
 # A private S3 bucket holds the script and CloudFront serves it. DNS stays in
-# the Cloudflare zone, as a CNAME to the distribution.
+# the Cloudflare zone, as a CNAME to the distribution. The hostname and zone
+# come from terraform.tfvars; see terraform.tfvars.example.
 #
 # Publish with:
 #   scripts/embed.sh --check && terraform -chdir=terraform apply
@@ -81,9 +82,11 @@ resource "aws_s3_bucket_policy" "installer" {
 
 # --- Certificate ---------------------------------------------------------------
 
-# The zone's CAA records list the certificate authorities Cloudflare uses, and
-# Amazon is not one of them, so ACM refuses to issue (CAA_ERROR). A CAA record
-# on the hostname itself takes precedence over the zone's for this name only.
+# A zone with CAA records that do not name Amazon makes ACM refuse to issue
+# (CAA_ERROR). Cloudflare zones commonly have such records, listing only the
+# certificate authorities Cloudflare uses. A CAA record on the hostname itself
+# takes precedence over the zone's for this name only, and is harmless when
+# the zone has none.
 resource "cloudflare_dns_record" "caa" {
   zone_id = data.cloudflare_zone.this.zone_id
   name    = var.hostname
@@ -184,13 +187,16 @@ resource "aws_cloudfront_origin_access_control" "installer" {
   signing_protocol                  = "sigv4"
 }
 
-# Maps /aws to the object in the bucket and answers every other path with 404.
+# Maps var.path to the object in the bucket and answers every other path with
+# 404.
 resource "aws_cloudfront_function" "router" {
   name    = "${var.name}-router"
   runtime = "cloudfront-js-2.0"
-  comment = "Routes /aws to the installer"
+  comment = "Routes ${var.path} to the installer"
   publish = true
-  code    = file("${path.module}/../cloudfront/router.js")
+  code = templatefile("${path.module}/../cloudfront/router.js", {
+    path = var.path
+  })
 }
 
 # The Free plan allows AWS managed policies only.
@@ -205,7 +211,7 @@ data "aws_cloudfront_response_headers_policy" "security_headers" {
 
 resource "aws_cloudfront_distribution" "installer" {
   enabled         = true
-  comment         = "Serves install.sh at https://${var.hostname}/aws"
+  comment         = "Serves install.sh at https://${var.hostname}${var.path}"
   aliases         = [var.hostname]
   is_ipv6_enabled = true
   http_version    = "http2and3"

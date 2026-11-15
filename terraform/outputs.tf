@@ -1,6 +1,11 @@
 output "install_url" {
   description = "URL the installer is served from."
-  value       = "https://${var.hostname}/aws"
+  value       = "https://${var.hostname}${var.path}"
+}
+
+output "install_command" {
+  description = "Command that downloads and runs the installer."
+  value       = "curl -fsSL https://${var.hostname}${var.path} | sudo bash"
 }
 
 output "distribution_id" {

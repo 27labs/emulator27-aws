@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars, which is not committed, and fill in your own values.
+
+# Cloudflare zone that holds the DNS for your domain.
+zone_name = "example.com"
+
+# Hostname inside that zone to serve the installer from.
+hostname = "get.example.com"
+
+# Optional. The values below are the defaults.
+
+# URL path of the installer: https://get.example.com/aws
+# path = "/aws"
+
+# Name given to the AWS resources.
+# name = "e27-installer"
+
+# CloudFront's flat-rate Free plan. Set to false if the AWS account is on the
+# Free Tier account plan, which is not eligible.
+# flat_rate_plan = true
+
+# Requests one IP address may make in 5 minutes before it is blocked.
+# rate_limit = 100
