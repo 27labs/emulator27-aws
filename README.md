@@ -54,7 +54,7 @@ The idle timeout can also be set with the `E27_AWS_IDLE_TIMEOUT` environment var
 e27-aws teardown
 ```
 
-Shuts down the emulator on the default port (or `e27-aws --port PORT teardown`), then asks whether to also delete the Terraform state files in the current directory (`terraform.tfstate`, its backup, and those of other workspaces). The emulator keeps everything in memory, so after a teardown that state describes resources that no longer exist.
+Shuts down the emulator on the default port (or `e27-aws --port PORT teardown`). If the current directory has Terraform state files (`terraform.tfstate`, its backup, and those of other workspaces), it first asks whether to delete them too, and only shuts the emulator down once you have answered; interrupting the question with Ctrl-C leaves everything as it was. The emulator keeps everything in memory, so after a teardown that state describes resources that no longer exist.
 
 Answer the question up front with `-y` (delete) or `-n` (keep):
 

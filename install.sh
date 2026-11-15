@@ -411,8 +411,8 @@ Usage: $PROG [options] [terraform args...]
        $PROG update
 
 Commands:
-  teardown   Shut down the aws-emulator on the given port, then ask whether to
-             also delete the Terraform state files in the current directory.
+  teardown   Shut down the aws-emulator on the given port, after asking whether
+             to also delete the Terraform state files in the current directory.
                -y, --yes   delete them without asking
                -n, --no    keep them without asking
   update     Update aws-emulator and $PROG itself.
@@ -665,8 +665,6 @@ cmd_teardown() {
         shift
     done
 
-    stop_emulator
-
     # The default workspace's state, plus the state of any other workspace.
     for file in terraform.tfstate terraform.tfstate.backup \
         terraform.tfstate.d/*/terraform.tfstate \
@@ -676,13 +674,9 @@ cmd_teardown() {
         fi
     done
 
-    if (( ${#files[@]} == 0 )); then
-        echo "No Terraform state files in $PWD."
-        TEARDOWN_STATE=none
-        return
-    fi
-
-    if [[ -z "$answer" ]]; then
+    # Ask before touching anything, so that interrupting the prompt leaves the
+    # emulator running.
+    if (( ${#files[@]} > 0 )) && [[ -z "$answer" ]]; then
         TEARDOWN_PROMPTED=true
         echo "Terraform state files in $PWD:"
         printf '  %s\n' "${files[@]}"
@@ -694,7 +688,12 @@ cmd_teardown() {
         esac
     fi
 
-    if [[ "$answer" == yes ]]; then
+    stop_emulator
+
+    if (( ${#files[@]} == 0 )); then
+        echo "No Terraform state files in $PWD."
+        TEARDOWN_STATE=none
+    elif [[ "$answer" == yes ]]; then
         rm -f -- "${files[@]}"
         echo "Deleted: ${files[*]}"
         TEARDOWN_STATE=deleted
